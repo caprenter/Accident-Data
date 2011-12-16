@@ -34,6 +34,7 @@ $new_csv = "amened_accidents.csv";
 //Specify number of records to be processed at the command line if you like
 if (isset($argv[1]) && $argv[1] != NULL) {
   $line_limit = intval($argv[1]);
+  echo $line_limit;
 }
 
 if (($handle = fopen($old_csv, "r")) !== FALSE) {
@@ -64,7 +65,7 @@ if (($handle = fopen($old_csv, "r")) !== FALSE) {
             $this_row_to_array[$value] = utf8_encode($data[(int)$key]);
           }
           //Add a new value to the line and write it to the file
-          $administrative_data = get_administrative_data($this_row_to_array["Latitude"],$this_row_to_array["Longitude"]);
+          $administrative_data = get_administrative_data_from_postgis($this_row_to_array["Latitude"],$this_row_to_array["Longitude"]);
           $this_row_to_array["ward"] = $administrative_data["ward"];
           //add more lines here if you wish...
           
@@ -73,33 +74,62 @@ if (($handle = fopen($old_csv, "r")) !== FALSE) {
       }
       fclose($fp); //close new file
       fclose($handle); //close old file
-  }
-
+}
 
 /**
- * Takes a lat/lng value, looks for a file of that name, parses it and returns the administartive data
+ * Takes a lat/lng value, performs a lookup against a PostGIS database with boundary data in it 
+ * and returns the administartive data
  * 
  * Currently just returns the electoral ward
  * 
- * Files are pre-cached from a call to http://www.uk-postcodes.com and saved with a useful 
- * filename that we can perform lookups against.
+ * Boundary data is taken from the Ordnance Survey Boundary Data
+ * http://www.ordnancesurvey.co.uk/oswebsite/products/boundary-line/
  * 
  * @param float $lat 
  * @param float $lng
  * @return array $administrative_data Array of administrative data pertaining to the lat/lng that was looked up.
 */
-function get_administrative_data($lat,$lng) {
+function get_administrative_data_from_postgis($lat,$lng) {
+  
+  //Thanks: http://www.techrepublic.com/blog/howdoi/how-do-i-use-php-with-postgresql/110
+  // attempt a connection
+  //Note this is for my local test environment
+  $dbh = pg_connect("host=localhost dbname=manchester user=david");
+  if (!$dbh) {
+     die("Error in connection: " . pg_last_error());
+  }       
 
-    $lat = round($lat,2);
-    $lng = round($lng,2);
-    $file = "data/" . $lat . "_" . $lng . ".json";
-    //echo $file;
-    $json = file_get_contents($file);
-    $data = json_decode($json);
-    $ward = $data->administrative->ward->title;
-    if ($ward !=NULL) {
-      $administrative_data["ward"] = $ward;
-    }
-    return $administrative_data;
+  // execute query
+  //We have database with imported boundary file data from the Ordnance Survey in the UK
+  //We use st_contains to check to see if a point is within a boundary
+  //The decimal lat lng need SRID of 4326
+  //The Ordnance Survey data needs 27700 hence the transform
+  $sql = "  select boundary.name FROM boundary WHERE st_contains(
+      boundary.the_geom,
+        st_transform(st_setsrid(
+          st_makepoint(" . $lng . "," . $lat ."),
+          4326),27700));";
+   $result = pg_query($dbh, $sql);
+   if (!$result) {
+       die("Error in SQL query: " . pg_last_error());
+   }       
+
+   // iterate over result set
+   // print each row
+   while ($row = pg_fetch_array($result)) {
+       $ward = $row["name"];
+   }       
+
+   // free memory
+   pg_free_result($result);       
+
+   // close connection
+   pg_close($dbh);
+   
+   if ($ward !=NULL) {
+        $administrative_data["ward"] = $ward;
+      }
+  
+   return $administrative_data;
 }
 ?>
